@@ -1,0 +1,13 @@
+[project]
+name = "agent-based-rag-system-for-financial-doc-analysis"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.123.5",
+    "langchain>=1.1.0",
+    "langchain-community>=0.4.1",
+    "langchain-text-splitters>=1.0.0",
+    "ruff>=0.14.7",
+]
