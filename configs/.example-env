@@ -1,2 +1,2 @@
 CHAT_MODEL = 'google_genai:gemini-2.5-flash-lite'
-MODEL_API_KEY = 
+GOOGLE_API_KEY = 
