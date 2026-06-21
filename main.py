@@ -1,18 +1,33 @@
-from src.config import Settings
-from langchain.chat_models import init_chat_model
-from langchain.messages import HumanMessage, SystemMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+import json  # noqa: F401
+import uvicorn
+from fastapi import FastAPI
 
-def main():
-    config = Settings()
-    model = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=config.GOOGLE_API_KEY)
-    systemMessage = SystemMessage("You are a helpful assistant")
-    humanMessage = HumanMessage("Give me a simple python logging example")
-    messages = [systemMessage, humanMessage]
-    response = model.invoke(messages)
-    print(response)
+from langchain_core.prompts import PromptTemplate  # noqa: F401
+from langchain_core.messages import HumanMessage, SystemMessage  # noqa: F401
+from langchain_google_genai import ChatGoogleGenerativeAI  # noqa: F401
 
+from src.config import Settings  # noqa: F401
+from src.routes.chat import router
+
+app = FastAPI()
+app.include_router(router)
+
+
+def main() -> None:
+    # config = Settings()
+    # model = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=config.GOOGLE_API_KEY)
+    # systemMessage = SystemMessage(content="Extract the US stock symbol and the time range from the provided query and give the response as an object with extracted symbol, from and to")
+    # humanMessage = HumanMessage(content="Analyze the apple stock in the time range of 2024-2026")
+    # PromptTemplate.from_template()
+    # messages = [systemMessage, humanMessage]
+    # response = model.invoke(messages)
+    # print(response)
+    # print(json.loads(response.content))
+
+    # Run the uvicorn server programmatically
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
 
 
 if __name__ == "__main__":
     main()
+

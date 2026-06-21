@@ -1,0 +1,19 @@
+{
+    "snyk.advanced.autoSelectOrganization": true,
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/src"
+    ],
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv",
+    "python.languageServer": "Pylance",
+    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.autoImportCompletions": true,
+    "python.analysis.completeFunctionParens": true,
+    "python-envs.pythonProjects": [
+        {
+            "path": "src",
+            "envManager": "ms-python.python:venv",
+            "packageManager": "ms-python.python:pip"
+        }
+    ],
+    "snyk.advanced.organization": "50b5bd07-b5bf-4705-ae5e-681938fff95a"
+}
