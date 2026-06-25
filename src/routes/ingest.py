@@ -1,0 +1,12 @@
+from fastapi import APIRouter
+
+from src.models.chat_models import UserMessage
+from src.services.ingestion_service import ingest_data
+
+
+router = APIRouter(prefix="/ingest",tags=['ingest'])
+
+@router.post('')
+def ingest(userQuery: UserMessage):
+    return ingest_data(userQuery)
+
