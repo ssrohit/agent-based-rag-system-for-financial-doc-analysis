@@ -1,4 +1,5 @@
 import os
+os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -15,6 +16,7 @@ class Settings(BaseSettings):
     LANGFUSE_SECRET_KEY: str = Field()
     LANGFUSE_PUBLIC_KEY: str = Field()
     LANGFUSE_BASE_URL: str = Field()
+    HF_TOKEN: str = Field()
 
     model_config = SettingsConfigDict(env_file=CONFIG_DIR / "configs" / ".env")
 
@@ -27,3 +29,4 @@ os.environ["LANGFUSE_PUBLIC_KEY"] = settings.LANGFUSE_PUBLIC_KEY
 os.environ["LANGFUSE_SECRET_KEY"] = settings.LANGFUSE_SECRET_KEY
 os.environ["LANGFUSE_HOST"] = settings.LANGFUSE_BASE_URL
 os.environ["GOOGLE_API_KEY"] = settings.GOOGLE_API_KEY
+os.environ["HF_TOKEN"] = settings.HF_TOKEN

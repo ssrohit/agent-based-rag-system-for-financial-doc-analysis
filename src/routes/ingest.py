@@ -7,6 +7,6 @@ from src.services.ingestion_service import ingest_data
 router = APIRouter(prefix="/ingest",tags=['ingest'])
 
 @router.post('')
-def ingest(userQuery: UserMessage):
-    return ingest_data(userQuery)
+async def ingest(userQuery: UserMessage):
+    return await ingest_data(userQuery)
 

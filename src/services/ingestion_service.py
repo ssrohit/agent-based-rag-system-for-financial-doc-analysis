@@ -1,14 +1,15 @@
 import logging
 import asyncio
-from typing import cast
 
-from models.chat_models import UserMessage
-from models.ingestion_models import SymbolExtraction
-from langchain_google_genai import ChatGoogleGenerativeAI
+
+from src.models.chat_models import UserMessage
+from src.models.ingestion_models import SymbolExtraction
 from src.config import settings
 from src.core.sec_filings_downloader import SecFilingsDownloader
 from src.document_processor.parse_documents import DocumentProcessor
 from langfuse import get_client
+from langfuse import observe
+from src.services.llm_service import llm_service
 
 
 langfuse = get_client()
@@ -19,18 +20,17 @@ sec_files_downloader = SecFilingsDownloader(
     path_to_download="sec_files",
 )
 
-
+@observe()
 async def ingest_data(userQuery: UserMessage):
     message_data = userQuery.user_message
     symbol_extractor_prompt = langfuse.get_prompt("dev/symbol-extractor")
     prompt = symbol_extractor_prompt.compile(user_message=message_data)
-    model = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash", google_api_key=settings.GOOGLE_API_KEY
+    
+    response = await llm_service.ainvoke_structured(
+        prompt=prompt,
+        schema=SymbolExtraction,
+        langfuse_prompt=symbol_extractor_prompt
     )
-    structured_model = model.with_structured_output(
-        schema=SymbolExtraction, method="json_schema"
-    )
-    response = cast(SymbolExtraction, await structured_model.ainvoke(prompt))
     logger.debug("Response : %s", response.model_dump_json())
     downloaded_files = await asyncio.to_thread(
         sec_files_downloader.download_filings,
@@ -39,7 +39,15 @@ async def ingest_data(userQuery: UserMessage):
         before=response.to_date,
         after=response.from_date,
     )
+    if not downloaded_files:
+        logger.warning("No files downloaded for symbol %s. Skipping document processing.", response.symbol)
+        return {"status": "no_files_downloaded", "symbol": response.symbol}
     doc_processor = DocumentProcessor("test_ingestion")
     for file_path in downloaded_files:
         await asyncio.to_thread(doc_processor.extract_data, str(file_path))
     logger.debug("Downloaded %d filing(s): %s", len(downloaded_files), downloaded_files)
+    return {
+        "status": "success",
+        "symbol": response.symbol,
+        "downloaded_files": [str(f) for f in downloaded_files]
+    }

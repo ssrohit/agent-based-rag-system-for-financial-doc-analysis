@@ -1,4 +1,7 @@
+import os
+os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 import json  # noqa: F401
+import logging
 import uvicorn
 from fastapi import FastAPI
 
@@ -7,10 +10,15 @@ from langchain_core.messages import HumanMessage, SystemMessage  # noqa: F401
 from langchain_google_genai import ChatGoogleGenerativeAI  # noqa: F401
 
 from src.config import Settings  # noqa: F401
-from src.routes.chat import router
+from src.routes.chat import router as chat_router
+from src.routes.ingest import router as ingest_router
 
 app = FastAPI()
-app.include_router(router)
+app.include_router(chat_router)
+app.include_router(ingest_router)
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 def main() -> None:

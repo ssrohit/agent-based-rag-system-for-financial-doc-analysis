@@ -1,7 +1,5 @@
-"""
-Document Parsing Methods
-"""
-
+import os
+os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 import logging
 import re
 from datetime import datetime
@@ -13,7 +11,7 @@ from langchain_community.document_loaders.base import BaseLoader
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from src.config import settings
 
 logger = logging.getLogger(__name__)
@@ -213,8 +211,10 @@ class SecEdgarAdvancedLoader(BaseLoader):
 class DocumentProcessor:
     def __init__(self, collection_name: str):
         self.config = settings
-        self.vector_generation_model = GoogleGenerativeAIEmbeddings(
-            model=self.config.VECTOR_GENERATION_MODEL
+        self.vector_generation_model = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-mpnet-base-v2",
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True}
         )
         self.vector_store = Chroma(
             persist_directory=self.config.CHROMA_PERSIST_PATH,
