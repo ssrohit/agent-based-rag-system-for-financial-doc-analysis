@@ -4,7 +4,7 @@ import asyncio
 
 from src.models.chat_models import UserMessage
 from src.models.ingestion_models import SymbolExtraction
-from src.config import settings
+from src.constants import DEFAULT_COLLECTION_NAME
 from src.core.sec_filings_downloader import SecFilingsDownloader
 from src.document_processor.parse_documents import DocumentProcessor
 from langfuse import get_client
@@ -42,7 +42,7 @@ async def ingest_data(userQuery: UserMessage):
     if not downloaded_files:
         logger.warning("No files downloaded for symbol %s. Skipping document processing.", response.symbol)
         return {"status": "no_files_downloaded", "symbol": response.symbol}
-    doc_processor = DocumentProcessor("test_ingestion")
+    doc_processor = DocumentProcessor(DEFAULT_COLLECTION_NAME)
     for file_path in downloaded_files:
         await asyncio.to_thread(doc_processor.extract_data, str(file_path))
     logger.debug("Downloaded %d filing(s): %s", len(downloaded_files), downloaded_files)

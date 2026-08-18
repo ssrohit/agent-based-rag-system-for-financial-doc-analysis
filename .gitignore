@@ -208,3 +208,6 @@ __marimo__/
 
 sec_files/**/*
 .chroma_db/
+
+# Local project planning notes
+plans/

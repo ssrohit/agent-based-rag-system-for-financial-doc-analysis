@@ -11,11 +11,12 @@ from src.utils.singleton import Singleton
 from langfuse.langchain import CallbackHandler
 
 T = TypeVar("T", bound=BaseModel)
+logger = logging.getLogger(__name__)
 
 
 class LLMService(metaclass=Singleton):
     """
-    Production-grade centralized LLM Service that handles structured and unstructured
+    Centralized LLM Service that handles structured and unstructured
     model invocations with automatic Langfuse tracing integration.
     """
 
