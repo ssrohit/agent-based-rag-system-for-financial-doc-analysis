@@ -32,3 +32,30 @@ so the history doubles as a record of how the system evolved.
 - Citations (`SourceReference`) are built directly from retrieved-chunk metadata, never from the
   LLM, so sources can't be hallucinated.
 - Handles the "nothing ingested yet" case explicitly instead of letting the LLM guess.
+
+## Level 3 — Hybrid Retrieval + Reranking
+
+- Replaced single-signal vector similarity search with a hand-rolled hybrid retrieval pipeline
+  in `RetrievalService`: `rank_bm25.BM25Okapi` keyword search runs alongside the existing Chroma
+  vector search, the two candidate pools are fused with a custom Reciprocal Rank Fusion
+  implementation (not LangChain's `EnsembleRetriever`), and the fused pool is reordered by a
+  local `sentence-transformers` cross-encoder (`cross-encoder/ms-marco-MiniLM-L-6-v2`) before the
+  final top-k is returned. Chosen deliberately over LangChain's retriever abstractions to keep
+  every fusion/reranking step visible and understood, and to avoid an undeclared
+  `langchain-classic` dependency.
+- New `src/services/hybrid_retrieval.py`: the pure scoring/fusion/selection logic (tokenization,
+  BM25 helpers, RRF, rerank-based top-k selection), deliberately free of any Chroma/embedding/
+  cross-encoder imports so it stays fast and unit-testable.
+- BM25 has no incremental-update API, so its in-memory index is rebuilt wholesale via a new
+  `RetrievalService.refresh()` — called once at startup and again after every `/ingest` call, so
+  newly-ingested filings are searchable without a server restart.
+- `SourceReference` gained `relevance_score`, populated from the reranker at retrieval time
+  (never LLM-generated), so citations now carry a measure of *why* a chunk was returned —
+  preserving the anti-hallucination citation guarantee from Level 2.
+- `ticker` is now threaded from the downloaded filing's own filename (not the raw, possibly
+  multi-symbol LLM extraction) through `DocumentProcessor`/`SecEdgarAdvancedLoader` into every
+  chunk's Chroma metadata — laying groundwork for Level 4's metadata-filtered retrieval without
+  adding query-time filtering yet.
+- First unit tests in the repo: `pytest` added as a dev dependency, with tests for the BM25/RRF/
+  rerank-selection logic in `tests/services/test_hybrid_retrieval.py`, using fixture `Document`s
+  only — no real model loads, kept fast by the `hybrid_retrieval.py` module split above.

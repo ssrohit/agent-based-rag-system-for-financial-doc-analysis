@@ -1,5 +1,7 @@
 import logging
 import asyncio
+from pathlib import Path
+from typing import Optional
 
 
 from src.models.chat_models import UserMessage
@@ -7,6 +9,7 @@ from src.models.ingestion_models import SymbolExtraction
 from src.constants import DEFAULT_COLLECTION_NAME
 from src.core.sec_filings_downloader import SecFilingsDownloader
 from src.document_processor.parse_documents import DocumentProcessor
+from src.services.retrieval_service import retrieval_service
 from langfuse import get_client
 from langfuse import observe
 from src.services.llm_service import llm_service
@@ -19,6 +22,15 @@ sec_files_downloader = SecFilingsDownloader(
     mail="surigd@gmail.com",
     path_to_download="sec_files",
 )
+
+
+def _ticker_from_downloaded_file(file_path: Path) -> Optional[str]:
+    """SecFilingsDownloader names files '{TICKER}_{FORM_TYPE}_{ACCESSION}_{filename}';
+    recover the ticker for this specific file rather than guessing from the (possibly
+    multi-ticker) LLM-extracted symbol list, so multi-company ingestion runs don't mislabel
+    every chunk with the same ticker."""
+    parts = file_path.name.split("_", 1)
+    return parts[0] if parts and parts[0] else None
 
 @observe()
 async def ingest_data(userQuery: UserMessage):
@@ -44,7 +56,9 @@ async def ingest_data(userQuery: UserMessage):
         return {"status": "no_files_downloaded", "symbol": response.symbol}
     doc_processor = DocumentProcessor(DEFAULT_COLLECTION_NAME)
     for file_path in downloaded_files:
-        await asyncio.to_thread(doc_processor.extract_data, str(file_path))
+        ticker = _ticker_from_downloaded_file(file_path)
+        await asyncio.to_thread(doc_processor.extract_data, str(file_path), ticker=ticker)
+    await asyncio.to_thread(retrieval_service.refresh)
     logger.debug("Downloaded %d filing(s): %s", len(downloaded_files), downloaded_files)
     return {
         "status": "success",

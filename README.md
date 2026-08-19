@@ -9,7 +9,7 @@ questions against that knowledge base.
 ## Architecture
 
 FastAPI app (`main.py`) → routers (`src/routes/`) → services (`src/services/`) → core/document
-processing (`src/core/`, `src/document_processor/`). See `CLAUDE.md` for the detailed
+processing (`src/core/`, `src/document_processor/`). See `AGENTS.md` for the detailed
 file-by-file architecture notes (loader internals, LLM service resolution logic, singleton usage,
 etc.) — this section stays high level.
 
@@ -17,9 +17,11 @@ etc.) — this section stays high level.
   `sec-edgar-downloader` fetches filings → a custom loader converts filing HTML (including
   financial tables) to clean, table-boundary-aware Markdown chunks → embedded
   (`sentence-transformers/all-mpnet-base-v2`) into a persistent Chroma vector store.
-- **Chat** (`POST /chat/user-msg`): free-text question → top-k similarity search over the Chroma
-  store → context-grounded prompt → LLM answer with key metrics/caveats → response includes the
-  source filings the answer was drawn from.
+- **Chat** (`POST /chat/user-msg`): free-text question → hybrid retrieval (vector similarity +
+  BM25 keyword search, fused via Reciprocal Rank Fusion, reordered by a local cross-encoder
+  reranker) over the Chroma store → context-grounded prompt → LLM answer with key
+  metrics/caveats → response includes the source filings the answer was drawn from, each with a
+  relevance score.
 - **Observability**: every service entrypoint is wrapped in a Langfuse `@observe()` trace, and all
   LLM calls go through a single `LLMService` that auto-attaches Langfuse callbacks. Prompts are
   managed in Langfuse (not hardcoded), e.g. `dev/symbol-extractor`, `dev/financial-qa`.
@@ -55,7 +57,7 @@ This project is being built incrementally, one capability ("level") at a time �
       chunking, embedding into Chroma.
 - [x] **Level 2 — Basic RAG QA Chain**: grounded retrieval + generation over ingested filings,
       with cited sources.
-- [ ] **Level 3 — Hybrid Retrieval + Reranking**: BM25 + vector ensemble retrieval, local
+- [x] **Level 3 — Hybrid Retrieval + Reranking**: BM25 + vector ensemble retrieval, local
       cross-encoder reranking.
 - [ ] **Level 4 — Smart Generation / Query Understanding**: query classification, entity
       extraction from questions, metadata-filtered retrieval.

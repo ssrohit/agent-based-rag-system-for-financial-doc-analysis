@@ -3,7 +3,7 @@ os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 import logging
 import re
 from datetime import datetime
-from typing import List, Union, Dict, Any, Iterator
+from typing import List, Optional, Union, Dict, Any, Iterator
 
 from bs4 import BeautifulSoup
 import markdownify
@@ -29,18 +29,27 @@ class SecEdgarAdvancedLoader(BaseLoader):
     - Captures global metadata (CIK, Company Name, Filing Date).
     """
 
-    def __init__(self, file_path: str, target_types: Union[str, List[str]] = ["10-K"]):
+    def __init__(
+        self,
+        file_path: str,
+        target_types: Union[str, List[str]] = ["10-K"],
+        ticker: Optional[str] = None,
+    ):
         """
         Args:
             file_path: Path to the .txt submission file.
             target_types: The document types to extract (e.g., "10-K", "EX-21").
                           Case-insensitive.
+            ticker: The stock ticker this specific filing belongs to (recovered from the
+                    downloaded filename, not the raw multi-ticker LLM extraction), attached to
+                    every chunk's metadata when present.
         """
         self.file_path = file_path
         if isinstance(target_types, str):
             self.target_types = [target_types.upper()]
         else:
             self.target_types = [t.upper() for t in target_types]
+        self.ticker = ticker
 
     def _parse_header_metadata(self, content: str) -> Dict[str, Any]:
         """Extracts global metadata from the SEC-HEADER block."""
@@ -158,6 +167,8 @@ class SecEdgarAdvancedLoader(BaseLoader):
 
                 doc_metadata = global_metadata.copy()
                 doc_metadata.update({"source": self.file_path, "doc_type": doc_type})
+                if self.ticker:
+                    doc_metadata["ticker"] = self.ticker
 
                 yield Document(page_content=clean_text, metadata=doc_metadata)
 
@@ -200,6 +211,8 @@ class SecEdgarAdvancedLoader(BaseLoader):
                 # Combine metadata
                 doc_metadata = global_metadata.copy()
                 doc_metadata.update({"source": self.file_path, "doc_type": doc_type})
+                if self.ticker:
+                    doc_metadata["ticker"] = self.ticker
 
                 documents.append(
                     Document(page_content=clean_text, metadata=doc_metadata)
@@ -222,7 +235,9 @@ class DocumentProcessor:
             collection_name=collection_name,
         )
 
-    def extract_data(self, file_path: str, filings: List[str] = ["10-K"]) -> None:
+    def extract_data(
+        self, file_path: str, filings: List[str] = ["10-K"], ticker: Optional[str] = None
+    ) -> None:
         logger.debug(
             "Starting data extraction from file: %s and filings: %s",
             file_path,
@@ -231,7 +246,7 @@ class DocumentProcessor:
         try:
             start = datetime.now()
             document_loader = SecEdgarAdvancedLoader(
-                file_path=file_path, target_types=filings
+                file_path=file_path, target_types=filings, ticker=ticker
             )
             text_splitter = RecursiveCharacterTextSplitter(
                 separators=["[START_TABLE]", "[END_TABLE]", "\n\n", ". "],

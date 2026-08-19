@@ -49,6 +49,9 @@ def _to_sources(chunks: List[Document]) -> List[SourceReference]:
                 doc_type=metadata.get("doc_type"),
                 filing_date=metadata.get("filing_date"),
                 cik=metadata.get("cik"),
+                # Retrieval-time metadata from the local cross-encoder reranker, not
+                # ingestion-time metadata like the fields above - still never LLM-generated.
+                relevance_score=metadata.get("rerank_score"),
             )
         )
     return sources

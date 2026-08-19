@@ -19,6 +19,13 @@ class SourceReference(BaseModel):
     doc_type: Optional[str] = None
     filing_date: Optional[str] = None
     cik: Optional[str] = None
+    relevance_score: Optional[float] = Field(
+        default=None,
+        description=(
+            "Raw (unnormalized) cross-encoder reranker score for this chunk, produced by a "
+            "deterministic local model at retrieval time - not LLM-generated."
+        ),
+    )
 
 
 class FinancialAnswer(BaseModel):
