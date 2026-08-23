@@ -13,6 +13,8 @@ from src.constants import DEFAULT_COLLECTION_NAME
 from src.services.hybrid_retrieval import (
     bm25_top_n,
     build_bm25_index,
+    build_ticker_filter,
+    filter_documents_by_tickers,
     reciprocal_rank_fusion,
     select_top_k_by_score,
 )
@@ -62,6 +64,13 @@ class RetrievalService(metaclass=Singleton):
         Chroma's durable on-disk writes, so this sees data written by any process, but keep in
         mind having multiple concurrently-open PersistentClients on the same path is a known
         Chroma footgun (SQLite locking), pre-existing in this codebase and not addressed here.
+
+        Args:
+            None.
+
+        Returns:
+            None. Updates `self._bm25_documents` and `self._bm25_index` in place; the latter is
+            set to `None` when the collection is currently empty (see `build_bm25_index`).
         """
         try:
             data = self.vector_store.get(include=["documents", "metadatas"])
@@ -78,14 +87,59 @@ class RetrievalService(metaclass=Singleton):
             logger.error("Error while refreshing BM25 index: %s", str(error), exc_info=True)
             raise error
 
-    async def retrieve(self, query: str, k: int = 5) -> List[Document]:
+    def _bm25_candidates(self, query: str, tickers: Optional[List[str]]) -> List[Document]:
+        """
+        Run BM25 candidate retrieval, optionally scoped to specific ticker(s).
+
+        BM25Okapi has no query-time filtering of its own - its index is fixed to a corpus at
+        construction time - so a ticker-scoped query rebuilds a small ephemeral index from just
+        the matching subset of `self._bm25_documents` rather than filtering the whole-collection
+        index built by `refresh()`.
+
+        Args:
+            query: Raw query text.
+            tickers: Ticker symbols to scope the search to, or `None`/empty for no scoping
+                (uses the pre-built whole-collection index from `refresh()`).
+
+        Returns:
+            Up to `BM25_CANDIDATE_K` documents ranked by BM25 score, highest first. Empty list
+            if there are no documents in scope (empty collection, or no chunks match `tickers`).
+        """
+        if not tickers:
+            return bm25_top_n(
+                self._bm25_index, self._bm25_documents, query, BM25_CANDIDATE_K
+            )
+        scoped_documents = filter_documents_by_tickers(self._bm25_documents, tickers)
+        scoped_index = build_bm25_index(scoped_documents)
+        return bm25_top_n(scoped_index, scoped_documents, query, BM25_CANDIDATE_K)
+
+    async def retrieve(
+        self, query: str, k: int = 5, tickers: Optional[List[str]] = None
+    ) -> List[Document]:
+        """
+        Retrieve the top-k chunks for a query via hybrid (vector + BM25) search, fused by
+        Reciprocal Rank Fusion and reordered by a local cross-encoder reranker.
+
+        Args:
+            query: The user's natural-language question or search text.
+            k: Maximum number of chunks to return, after reranking.
+            tickers: When given (non-empty), scopes both the vector search (via a Chroma
+                metadata `where` filter, see `build_ticker_filter`) and the BM25 candidate pool
+                (via `filter_documents_by_tickers`) to chunks whose `metadata["ticker"]` matches
+                one of these tickers (case-insensitive). `None` or empty means search the whole
+                collection, unscoped - unchanged from the pre-Level-4 behavior.
+
+        Returns:
+            Up to `k` `Document`s, best-first, each with a `metadata["rerank_score"]` set by the
+            cross-encoder (see `select_top_k_by_score`). Empty list if nothing is retrievable -
+            either the collection (or the `tickers`-scoped subset of it) is empty, or fusion
+            produced no candidates.
+        """
         try:
             vector_docs = await self.vector_store.asimilarity_search(
-                query, k=VECTOR_CANDIDATE_K
+                query, k=VECTOR_CANDIDATE_K, filter=build_ticker_filter(tickers)
             )
-            bm25_docs = await asyncio.to_thread(
-                bm25_top_n, self._bm25_index, self._bm25_documents, query, BM25_CANDIDATE_K
-            )
+            bm25_docs = await asyncio.to_thread(self._bm25_candidates, query, tickers)
             fused = reciprocal_rank_fusion([vector_docs, bm25_docs])[:RERANK_CANDIDATE_POOL]
             if not fused:
                 return []

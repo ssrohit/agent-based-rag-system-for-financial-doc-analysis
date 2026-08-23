@@ -28,9 +28,18 @@ def _ticker_from_downloaded_file(file_path: Path) -> Optional[str]:
     """SecFilingsDownloader names files '{TICKER}_{FORM_TYPE}_{ACCESSION}_{filename}';
     recover the ticker for this specific file rather than guessing from the (possibly
     multi-ticker) LLM-extracted symbol list, so multi-company ingestion runs don't mislabel
-    every chunk with the same ticker."""
+    every chunk with the same ticker. Uppercased so it matches the case-normalized filter
+    query-time retrieval builds in `hybrid_retrieval.build_ticker_filter` (Level 4).
+
+    Args:
+        file_path: Path to a file produced by `SecFilingsDownloader.download_filings`.
+
+    Returns:
+        The uppercased ticker prefix of the filename, or `None` if the filename has no
+        recognizable ticker prefix.
+    """
     parts = file_path.name.split("_", 1)
-    return parts[0] if parts and parts[0] else None
+    return parts[0].upper() if parts and parts[0] else None
 
 @observe()
 async def ingest_data(userQuery: UserMessage):

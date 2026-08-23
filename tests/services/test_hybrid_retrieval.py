@@ -1,6 +1,8 @@
 from src.services.hybrid_retrieval import (
     bm25_top_n,
     build_bm25_index,
+    build_ticker_filter,
+    filter_documents_by_tickers,
     reciprocal_rank_fusion,
     select_top_k_by_score,
     tokenize,
@@ -80,3 +82,33 @@ def test_select_top_k_by_score_does_not_mutate_input(make_document):
     assert doc.metadata == original_metadata_snapshot
     assert "rerank_score" not in doc.metadata
     assert top[0].metadata["rerank_score"] == 0.42
+
+
+def test_build_ticker_filter_returns_none_for_empty_or_none():
+    assert build_ticker_filter(None) is None
+    assert build_ticker_filter([]) is None
+
+
+def test_build_ticker_filter_single_ticker_uses_eq_and_uppercases():
+    assert build_ticker_filter(["aapl"]) == {"ticker": {"$eq": "AAPL"}}
+
+
+def test_build_ticker_filter_multiple_tickers_uses_in_and_uppercases():
+    assert build_ticker_filter(["aapl", "msft"]) == {"ticker": {"$in": ["AAPL", "MSFT"]}}
+
+
+def test_filter_documents_by_tickers_returns_unchanged_when_no_tickers(make_document):
+    docs = [make_document("a", doc_id="1", ticker="AAPL")]
+
+    assert filter_documents_by_tickers(docs, None) == docs
+    assert filter_documents_by_tickers(docs, []) == docs
+
+
+def test_filter_documents_by_tickers_matches_case_insensitively(make_document):
+    aapl_doc = make_document("Apple content", doc_id="1", ticker="AAPL")
+    msft_doc = make_document("Microsoft content", doc_id="2", ticker="MSFT")
+    no_ticker_doc = make_document("No ticker content", doc_id="3")
+
+    result = filter_documents_by_tickers([aapl_doc, msft_doc, no_ticker_doc], ["aapl"])
+
+    assert result == [aapl_doc]

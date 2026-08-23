@@ -28,6 +28,21 @@ class SourceReference(BaseModel):
     )
 
 
+class QueryEntities(BaseModel):
+    """Structured-output schema for query-time entity extraction: which company (if any) a
+    chat question is about, used to scope retrieval via a metadata filter. Mirrors the
+    structured-extraction pattern `SymbolExtraction` uses at ingestion time, but must tolerate
+    questions that name no company at all rather than guessing one."""
+
+    tickers: List[str] = Field(
+        default_factory=list,
+        description=(
+            "US stock ticker symbols explicitly named or clearly implied in the question, "
+            "uppercase. Empty list if the question does not refer to a specific company."
+        ),
+    )
+
+
 class FinancialAnswer(BaseModel):
     answer: str = Field(description="Direct answer to the user's question")
     key_metrics: List[str] = Field(

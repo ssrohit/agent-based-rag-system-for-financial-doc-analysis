@@ -17,11 +17,12 @@ etc.) — this section stays high level.
   `sec-edgar-downloader` fetches filings → a custom loader converts filing HTML (including
   financial tables) to clean, table-boundary-aware Markdown chunks → embedded
   (`sentence-transformers/all-mpnet-base-v2`) into a persistent Chroma vector store.
-- **Chat** (`POST /chat/user-msg`): free-text question → hybrid retrieval (vector similarity +
-  BM25 keyword search, fused via Reciprocal Rank Fusion, reordered by a local cross-encoder
-  reranker) over the Chroma store → context-grounded prompt → LLM answer with key
-  metrics/caveats → response includes the source filings the answer was drawn from, each with a
-  relevance score.
+- **Chat** (`POST /chat/user-msg`): free-text question → LLM extracts which company (if any) the
+  question is about → hybrid retrieval (vector similarity + BM25 keyword search, both scoped to
+  that company's chunks when one was identified, fused via Reciprocal Rank Fusion, reordered by
+  a local cross-encoder reranker) over the Chroma store → context-grounded prompt → LLM answer
+  with key metrics/caveats → response includes the source filings the answer was drawn from,
+  each with a relevance score.
 - **Observability**: every service entrypoint is wrapped in a Langfuse `@observe()` trace, and all
   LLM calls go through a single `LLMService` that auto-attaches Langfuse callbacks. Prompts are
   managed in Langfuse (not hardcoded), e.g. `dev/symbol-extractor`, `dev/financial-qa`.
@@ -59,8 +60,8 @@ This project is being built incrementally, one capability ("level") at a time �
       with cited sources.
 - [x] **Level 3 — Hybrid Retrieval + Reranking**: BM25 + vector ensemble retrieval, local
       cross-encoder reranking.
-- [ ] **Level 4 — Smart Generation / Query Understanding**: query classification, entity
-      extraction from questions, metadata-filtered retrieval.
+- [x] **Level 4 — Smart Generation / Query Understanding**: entity extraction from questions,
+      ticker-scoped metadata-filtered retrieval.
 - [ ] **Level 5 — Agentic Multi-Hop Reasoning**: ReAct-style agent with tools (document search,
       company comparison, calculator) and a reflection/self-verification step.
 - [ ] **Level 6 — Evaluation**: RAGAS-based evaluation harness, benchmarked across levels 2-5.
