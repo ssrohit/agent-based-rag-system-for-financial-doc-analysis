@@ -23,9 +23,18 @@ etc.) — this section stays high level.
   a local cross-encoder reranker) over the Chroma store → context-grounded prompt → LLM answer
   with key metrics/caveats → response includes the source filings the answer was drawn from,
   each with a relevance score.
+- **Agent** (`POST /agent/ask`): a LangGraph-based alternative to `/chat/user-msg` for multi-part
+  questions. A bounded ReAct-style loop plans and calls tools — document search, a dedicated
+  company-comparison search, and a safe (no `eval()`) calculator — then drafts an answer and runs
+  it through an LLM-judged reflection step (grounded/complete) that can send the loop back for one
+  more evidence-gathering round before finalizing. Both loops are explicitly bounded (max tool
+  rounds, max reflection retries), so a hard-to-answer question degrades to a best-effort answer
+  with an honest caveat instead of hanging or erroring. Ships alongside `/chat/user-msg`, not as a
+  replacement for it.
 - **Observability**: every service entrypoint is wrapped in a Langfuse `@observe()` trace, and all
   LLM calls go through a single `LLMService` that auto-attaches Langfuse callbacks. Prompts are
-  managed in Langfuse (not hardcoded), e.g. `dev/symbol-extractor`, `dev/financial-qa`.
+  managed in Langfuse (not hardcoded), e.g. `dev/symbol-extractor`, `dev/financial-qa`,
+  `dev/agent-system`, `dev/answer-grader`.
 
 ## Getting started
 
@@ -47,6 +56,10 @@ curl -X POST http://127.0.0.1:8000/ingest \
 curl -X POST http://127.0.0.1:8000/chat/user-msg \
   -H "Content-Type: application/json" \
   -d '{"userMessage": "What was Apple'\''s total revenue and how did it change year over year?"}'
+
+curl -X POST http://127.0.0.1:8000/agent/ask \
+  -H "Content-Type: application/json" \
+  -d '{"userMessage": "Compare Apple and Microsoft'\''s revenue growth"}'
 ```
 
 ## Progress
@@ -62,8 +75,8 @@ This project is being built incrementally, one capability ("level") at a time �
       cross-encoder reranking.
 - [x] **Level 4 — Smart Generation / Query Understanding**: entity extraction from questions,
       ticker-scoped metadata-filtered retrieval.
-- [ ] **Level 5 — Agentic Multi-Hop Reasoning**: ReAct-style agent with tools (document search,
-      company comparison, calculator) and a reflection/self-verification step.
+- [x] **Level 5 — Agentic Multi-Hop Reasoning**: LangGraph ReAct-style agent with tools (document
+      search, company comparison, calculator) and a bounded reflection/self-verification step.
 - [ ] **Level 6 — Evaluation**: RAGAS-based evaluation harness, benchmarked across levels 2-5.
 - [ ] **Level 7 — Frontend**: chat interface with a sources panel (framework TBD).
 - [ ] **Level 8 — Deployment**: containerization and a hosted demo.

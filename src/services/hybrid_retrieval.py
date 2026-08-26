@@ -80,6 +80,30 @@ def _dedup_key(doc: Document) -> str:
     return doc.id or _content_fallback_id(doc)
 
 
+def dedup_documents(documents: Sequence[Document]) -> List[Document]:
+    """
+    Deduplicate documents by identity (`Document.id`, falling back to a content hash), keeping
+    the first occurrence of each. Used wherever documents accumulated across multiple separate
+    retrieval calls need deduping before being used as context/citations, using the same identity
+    rule as `reciprocal_rank_fusion` below.
+
+    Args:
+        documents: Documents to dedupe, in the order to prefer (first occurrence wins).
+
+    Returns:
+        `documents` with duplicates removed, original order preserved.
+    """
+    seen = set()
+    deduped = []
+    for doc in documents:
+        key = _dedup_key(doc)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(doc)
+    return deduped
+
+
 def reciprocal_rank_fusion(
     ranked_lists: Sequence[Sequence[Document]], k: int = 60
 ) -> List[Document]:

@@ -13,6 +13,7 @@ from src.services.retrieval_service import retrieval_service
 from langfuse import get_client
 from langfuse import observe
 from src.services.llm_service import llm_service
+from src.utils.timing import log_duration
 
 
 langfuse = get_client()
@@ -53,21 +54,24 @@ async def ingest_data(userQuery: UserMessage):
         langfuse_prompt=symbol_extractor_prompt
     )
     logger.debug("Response : %s", response.model_dump_json())
-    downloaded_files = await asyncio.to_thread(
-        sec_files_downloader.download_filings,
-        tickers=response.symbol,
-        limit=5,
-        before=response.to_date,
-        after=response.from_date,
-    )
+    with log_duration(logger, f"SEC filings download (symbol={response.symbol})"):
+        downloaded_files = await asyncio.to_thread(
+            sec_files_downloader.download_filings,
+            tickers=response.symbol,
+            limit=5,
+            before=response.to_date,
+            after=response.from_date,
+        )
     if not downloaded_files:
         logger.warning("No files downloaded for symbol %s. Skipping document processing.", response.symbol)
         return {"status": "no_files_downloaded", "symbol": response.symbol}
     doc_processor = DocumentProcessor(DEFAULT_COLLECTION_NAME)
-    for file_path in downloaded_files:
-        ticker = _ticker_from_downloaded_file(file_path)
-        await asyncio.to_thread(doc_processor.extract_data, str(file_path), ticker=ticker)
-    await asyncio.to_thread(retrieval_service.refresh)
+    with log_duration(logger, f"Document processing for {len(downloaded_files)} file(s)"):
+        for file_path in downloaded_files:
+            ticker = _ticker_from_downloaded_file(file_path)
+            await asyncio.to_thread(doc_processor.extract_data, str(file_path), ticker=ticker)
+    with log_duration(logger, "BM25 refresh after ingestion"):
+        await asyncio.to_thread(retrieval_service.refresh)
     logger.debug("Downloaded %d filing(s): %s", len(downloaded_files), downloaded_files)
     return {
         "status": "success",

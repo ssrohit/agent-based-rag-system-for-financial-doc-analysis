@@ -10,12 +10,14 @@ from langchain_core.messages import HumanMessage, SystemMessage  # noqa: F401
 from langchain_google_genai import ChatGoogleGenerativeAI  # noqa: F401
 
 from src.config import Settings  # noqa: F401
+from src.routes.agent import router as agent_router
 from src.routes.chat import router as chat_router
 from src.routes.ingest import router as ingest_router
 
 app = FastAPI()
 app.include_router(chat_router)
 app.include_router(ingest_router)
+app.include_router(agent_router)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

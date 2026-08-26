@@ -35,8 +35,9 @@ Langfuse, Google, HF libs that read env vars directly).
 Layered FastAPI app: `main.py` → `src/routes/*` → `src/services/*` → `src/core/*` / `src/document_processor/*`.
 
 - **`main.py`** — FastAPI app entrypoint; mounts routers and runs uvicorn.
-- **`src/routes/`** — thin FastAPI routers (`chat.py` at `/chat`, `ingest.py` at `/ingest`) that just
-  delegate to a service function. Keep route handlers thin; business logic belongs in services.
+- **`src/routes/`** — thin FastAPI routers (`chat.py` at `/chat`, `ingest.py` at `/ingest`,
+  `agent.py` at `/agent`) that just delegate to a service function. Keep route handlers thin;
+  business logic belongs in services.
 - **`src/services/llm_service.py`** — `llm_service`, a `Singleton`-metaclass instance centralizing all
   LLM calls (via `langchain_google_genai.ChatGoogleGenerativeAI`). All LLM invocation should go through
   this, not ad-hoc `ChatGoogleGenerativeAI` instances, because it:
@@ -44,8 +45,11 @@ Layered FastAPI app: `main.py` → `src/routes/*` → `src/services/*` → `src/
   - resolves the model name with precedence: explicit `model_name` arg → model embedded in a Langfuse
     prompt object's `config`/`metadata`/`model` attr → `settings.CHAT_MODEL` default, stripping any
     `provider:` prefix (e.g. `google_genai:gemini-2.5-flash` → `gemini-2.5-flash`);
-  - exposes `ainvoke_structured(prompt, schema, ...)` for Pydantic-schema-constrained output and
-    `ainvoke(prompt, ...)` for raw string output.
+  - exposes `ainvoke_structured(prompt, schema, ...)` for Pydantic-schema-constrained output,
+    `ainvoke(prompt, ...)` for raw string output, and `get_chat_model(prompt, ...)` (Level 5) which
+    returns the resolved, callback-attached `ChatGoogleGenerativeAI` itself for callers that need the
+    raw model object (e.g. to `.bind_tools(...)` for an agent loop) rather than one of the narrower
+    invoke helpers — `ainvoke`/`ainvoke_structured` are themselves now thin wrappers over it.
 - **`src/services/ingestion_service.py`** — `ingest_data()`, the pipeline entrypoint. Flow: fetch a
   Langfuse-managed prompt (`dev/symbol-extractor`) → `llm_service.ainvoke_structured` to extract a
   `SymbolExtraction` (ticker(s) + date range) from the user's message → download filings via
@@ -92,7 +96,57 @@ Layered FastAPI app: `main.py` → `src/routes/*` → `src/services/*` → `src/
   retrieval-time-deterministic rather than ingestion-time metadata but follows the same trust model)
   → return a `ChatResponse`. If retrieval returns nothing, short-circuits instead of calling the LLM:
   naming the extracted ticker(s) in the message when the question named a company with no ingested
-  chunks, otherwise the generic "nothing ingested yet" answer from Level 2.
+  chunks, otherwise the generic "nothing ingested yet" answer from Level 2. `_build_context`/
+  `_to_sources` were promoted out to `rag_formatting.py` in Level 5 (see below) so the agent path
+  can reuse them; `process_user_message`'s own behavior is unchanged.
+- **`src/services/rag_formatting.py`** (Level 5) — `build_context(chunks)`/`to_sources(chunks)`,
+  extracted out of `chat_service.py` so the agent pipeline builds LLM-facing context strings and
+  response-facing source citations identically to the Level 2-4 chat pipeline (same
+  "citations come only from retrieved-chunk metadata, never the LLM" invariant) instead of a second
+  copy of the same logic. Both `chat_service.py` and `agent_graph.py` import from here.
+- **`src/services/calculator.py`** (Level 5) — `safe_eval(expression)`, a restricted arithmetic
+  evaluator: walks a Python `ast` and only permits numeric literals plus `+ - * / % **`/parentheses;
+  any other node (names, calls, attributes, comprehensions, ...) raises `ValueError`. Deliberately
+  never calls `eval`/`exec`, since the expression is ultimately LLM-influenced input. Split into its
+  own module (mirroring `hybrid_retrieval.py`'s split from `retrieval_service.py`) so it stays
+  unit-testable (`tests/services/test_calculator.py`) without importing `agent_tools.py`, which pulls
+  in `retrieval_service` and its real embedding/cross-encoder model loads at import time.
+- **`src/services/agent_tools.py`** (Level 5) — the three tools available to the Level 5 agent, each
+  a plain async function returning `(llm_facing_text, retrieved_documents)`: `search_filings(query,
+  tickers=None)` (thin wrapper over `retrieval_service.retrieve`), `compare_companies(tickers,
+  aspect)` (a dedicated tool — not left to the agent to improvise by calling `search_filings`
+  per-company — fans out scoped retrieval per ticker in parallel via `asyncio.gather` and returns the
+  evidence explicitly grouped by company), and `calculate(expression)` (thin wrapper over
+  `calculator.safe_eval`). `build_agent_tool_schemas()` builds the `StructuredTool` wrappers bound to
+  the model via `.bind_tools(...)` purely so it can produce valid tool-call arguments;
+  `TOOL_FUNCTIONS` maps each tool's name back to its plain async function, which `agent_graph.py`'s
+  `tools` node dispatches to directly (not through LangChain's generic tool-execution machinery),
+  since it needs both the LLM-facing string *and* the raw `Document`s for state/citations.
+- **`src/services/agent_graph.py`** (Level 5) — the LangGraph agent itself. `AgentState` (TypedDict)
+  tracks the running `messages` list, accumulated `retrieved_chunks`, `draft_answer`,
+  `tool_call_log`, and two explicit bounded counters: `loop_count` (agent<->tools rounds, capped at
+  `MAX_TOOL_ITERATIONS = 4`) and `reflection_attempts` (grade-triggered retries, capped at
+  `MAX_REFLECTION_RETRIES = 1`). These are checked in graph routing logic rather than left to
+  LangGraph's `recursion_limit`, since hitting that raises and aborts the whole request — the goal is
+  graceful degradation (best-effort answer with an honest caveat), never a 500. Flow: `agent` node
+  (binds `tool_schemas` via `.bind_tools(...)`, decides to call tools or stop) <-> `tools` node
+  (dispatches via `TOOL_FUNCTIONS`) in a loop, then `draft_answer` (structured `FinancialAnswer` from
+  the deduped accumulated evidence, reusing the existing `dev/financial-qa` prompt) -> `grade`
+  (structured `AnswerGrade` via the new `dev/answer-grader` prompt; accepts, or routes back to
+  `agent` with injected feedback if under the retry cap, or finalizes anyway with an appended caveat
+  if the cap is exhausted) -> `finalize`. `build_agent_graph(...)` is a factory (not a module-level
+  singleton) taking every model/prompt dependency as an injectable factory function specifically so
+  `tests/services/test_agent_graph.py` can swap in a hand-rolled fake chat model and exercise the
+  loop/cap/retry control flow with no real LLM calls, no Langfuse prompt fetches, and no
+  embedding/cross-encoder model loads (this module never imports `agent_tools.py`/
+  `retrieval_service`).
+- **`src/services/agent_service.py`** (Level 5) — `run_agent()`, the agent counterpart to
+  `chat_service.process_user_message`, wired with `@observe()`. Builds the real (non-test)
+  `agent_app` by wiring `build_agent_graph(...)` to `llm_service.get_chat_model` (per-node factories,
+  one per Langfuse prompt so each node's model-name resolution reflects its own prompt's `config`)
+  and the real tools/prompts, then on each request runs `agent_app.ainvoke(initial_state(question))`
+  and maps the final state to an `AgentChatResponse` (sources via `rag_formatting.to_sources` on the
+  deduped accumulated chunks — never LLM-generated, same as the chat path).
 - **`src/services/chromadb_service.py`** — `ChromaDbService`, a `Singleton` wrapper around a
   `chromadb.PersistentClient` (path from `settings.CHROMA_PERSIST_PATH`) for collection
   create/get/delete. Note: `document_processor/parse_documents.py` currently talks to Chroma directly
@@ -123,7 +177,11 @@ Layered FastAPI app: `main.py` → `src/routes/*` → `src/services/*` → `src/
   `chat_models.QueryEntities` is the structured-output schema the LLM fills in at query time
   (`dev/query-entity-extraction`) to identify which company/companies (if any) a chat question is
   about, used to scope retrieval. `ingestion_models.SymbolExtraction` is the structured-output schema
-  the LLM fills in during ingestion (ticker symbol(s), `from_date`, `to_date`).
+  the LLM fills in during ingestion (ticker symbol(s), `from_date`, `to_date`). `agent_models.py`
+  (Level 5): `AnswerGrade` is the structured-output schema the `grade` node fills in
+  (`grounded`/`complete`/`feedback`); `AgentChatResponse` extends `ChatResponse` with `tool_calls`
+  (human-readable log of tool invocations, for transparency into the agent's reasoning) and
+  `reflection_retried`.
 - **`src/constants.py`** — small shared constants, currently just `DEFAULT_COLLECTION_NAME`, the
   Chroma collection name used by both ingestion and retrieval so they can't drift apart.
 - **`src/utils/singleton.py`** — `Singleton` metaclass used by `LLMService` and `ChromaDbService` to
@@ -135,9 +193,9 @@ Layered FastAPI app: `main.py` → `src/routes/*` → `src/services/*` → `src/
 ### Tracing / observability
 
 Langfuse is wired in throughout via `@observe()` decorators on service entrypoints (`ingest_data`,
-`process_user_message`) and via `llm_service`'s automatic callback attachment — new service-level
-entrypoints that do meaningful work should follow the same `@observe()` convention, and any LLM calls
-should go through `llm_service` rather than instantiating a chat model directly, to keep tracing
-consistent. Prompts (e.g. `dev/symbol-extractor`, `dev/query-entity-extraction`,
-`dev/financial-qa`) are managed in Langfuse and fetched via `langfuse.get_prompt(...)`, not
-hardcoded in Python.
+`process_user_message`, `run_agent`) and via `llm_service`'s automatic callback attachment — new
+service-level entrypoints that do meaningful work should follow the same `@observe()` convention, and
+any LLM calls should go through `llm_service` rather than instantiating a chat model directly, to keep
+tracing consistent. Prompts (e.g. `dev/symbol-extractor`, `dev/query-entity-extraction`,
+`dev/financial-qa`, `dev/agent-system`, `dev/answer-grader`) are managed in Langfuse and fetched via
+`langfuse.get_prompt(...)`, not hardcoded in Python.

@@ -130,3 +130,83 @@ so the history doubles as a record of how the system evolved.
     improvement. Covered by new unit tests in `tests/document_processor/test_parse_documents.py`
     (grid resolution, header detection, chunk splitting, table-span preservation) with no real
     model loads.
+
+## Level 5 — Agentic Multi-Hop Reasoning
+
+- New `POST /agent/ask` endpoint, ships **alongside** `/chat/user-msg`, not as a replacement —
+  the simpler Level 2-4 single-shot RAG path stays available as a baseline for Level 6's
+  evaluation harness to compare against, and nothing about how `/chat/user-msg` works changed.
+- Built with LangGraph (`src/services/agent_graph.py`): a bounded ReAct-style tool-calling loop
+  (`agent` <-> `tools`) followed by a Self-RAG/CRAG-style reflection loop
+  (`draft_answer` -> `grade` -> retry-with-feedback-or-accept). Two explicit state counters bound
+  both loops — `MAX_TOOL_ITERATIONS = 4` agent/tools rounds, `MAX_REFLECTION_RETRIES = 1`
+  grade-triggered retry — deliberately checked in graph logic rather than left to LangGraph's
+  `recursion_limit`, since hitting that raises and aborts the whole request; the goal here is
+  graceful degradation (best-effort answer with an honest caveat), never a 500.
+- Three tools (`src/services/agent_tools.py`), each a plain async function returning
+  `(llm_facing_text, retrieved_documents)`:
+  - `search_filings(query, tickers=None)` — thin wrapper over the existing Level 3/4 hybrid
+    retrieval (`retrieval_service.retrieve`), for single-company facts or one piece of evidence
+    toward a larger question.
+  - `compare_companies(tickers, aspect)` — a **dedicated** tool (not left to the agent to
+    improvise by calling `search_filings` twice), fanning out scoped retrieval per ticker in
+    parallel and returning the evidence explicitly grouped by company, so it can't get
+    accidentally attributed to the wrong one.
+  - `calculate(expression)` — a restricted arithmetic evaluator (`src/services/calculator.py`)
+    for arithmetic on retrieved figures (percent changes, ratios). Walks a Python `ast` and only
+    permits numeric literals plus `+ - * / % **`/parentheses; any other node (names, calls,
+    attribute access, comprehensions, ...) is rejected. Deliberately never calls `eval`/`exec`,
+    since the expression is ultimately LLM-influenced input. Split into its own module (mirroring
+    how `hybrid_retrieval.py` was split from `retrieval_service.py` in Level 3) so the evaluator
+    stays unit-testable without importing `agent_tools.py`, which pulls in `retrieval_service` and
+    its real embedding/cross-encoder model loads at import time.
+  - The agent binds `StructuredTool` schema wrappers to the model purely so it can produce valid
+    tool-call arguments; the graph's own `tools` node dispatches by name back to these plain
+    functions directly (not through LangChain's generic tool-execution machinery), since it needs
+    both the LLM-facing string *and* the raw retrieved `Document`s for state/citations.
+- Reflection (`grade` node) is a real LLM-judge, not a regex/substring check: a new structured
+  schema `AnswerGrade` (`src/models/agent_models.py`, `grounded`/`complete`/`feedback`) judges the
+  draft answer against the evidence actually gathered, via a new Langfuse-managed prompt
+  `dev/answer-grader`. A regex check can only catch "this number isn't literally in the context";
+  it can't catch "the evidence doesn't actually answer what was asked" or "the comparison only
+  covers one of the two companies," which are the failure modes multi-hop questions actually
+  produce.
+- Citations remain independent from the LLM: `chat_service.py`'s `_build_context`/`_to_sources`
+  were promoted out into a new shared `src/services/rag_formatting.py`
+  (`build_context`/`to_sources`), used by both the Level 2-4 chat path and the new agent path, so
+  the "sources are built directly from retrieved-chunk metadata, never the LLM" invariant every
+  prior level has kept applies identically here. `chat_service.py`'s own behavior is unchanged —
+  pure extract-and-reuse refactor, covered by the existing test suite continuing to pass.
+  Similarly, `hybrid_retrieval.py` gained `dedup_documents` (same `Document.id`/content-hash
+  identity rule `reciprocal_rank_fusion` already used) for deduping chunks accumulated across
+  multiple separate tool calls before they're used as context/citations.
+- `llm_service.py` gained a public `get_chat_model(...)`, extracted from `ainvoke`/
+  `ainvoke_structured`'s shared model-construction logic, so the agent node can `.bind_tools(...)`
+  a model while still routing through the one centralized place for model resolution and
+  Langfuse-callback attachment — `ainvoke`/`ainvoke_structured` behavior is unchanged.
+- New response schema `AgentChatResponse` (`src/models/agent_models.py`) extends the existing
+  `ChatResponse` with `tool_calls` (a human-readable log of every tool invocation, for
+  transparency into the agent's reasoning) and `reflection_retried`.
+- **No web-search tool**, despite the original master plan listing it as optional, and
+  **single-turn only** (no cross-request conversation memory) — both explicit non-goals for this
+  level, not oversights: the README's Level 5 description names exactly three tools, and adding
+  multi-turn memory would mean a new request field, a persistence/checkpointer choice, and route
+  changes that weren't asked for.
+- New tests: `tests/services/test_calculator.py` (valid expressions, rejected non-arithmetic
+  constructs, division by zero) and `tests/services/test_agent_graph.py` (graph control-flow,
+  using a hand-rolled fake chat model injected via `build_agent_graph`'s factory parameters — no
+  real LLM calls, no Langfuse prompt fetches, no embedding/cross-encoder model loads): a
+  no-tool-call question skips straight to grading, a tool call routes through `tools` and back,
+  the iteration cap forces `draft_answer` regardless of further tool requests, and a rejected
+  grade routes back to `agent` exactly once before finalizing with an appended caveat.
+- **Verified end-to-end** against the running server with Apple/Microsoft/ServiceNow already
+  ingested: a single-company question resolved in one `search_filings` call; "Compare Microsoft
+  and ServiceNow revenue" correctly invoked `compare_companies` (not two separate searches) and
+  cited both companies with an honest caveat about differing fiscal year-ends; a revenue-growth
+  question correctly invoked `calculate` on the two retrieved figures rather than the LLM
+  hand-waving a percentage. `/chat/user-msg` re-verified unchanged (Level 4 regression check).
+  The low-evidence/loop-termination scenario (a never-ingested ticker) was exercised directly
+  (bypassing the API) and confirmed to fail only on an exhausted Gemini free-tier daily quota
+  (20 requests/day - the agent's multi-call loop burns quota faster than the single-shot chat
+  path), not a code defect; the graceful-degradation behavior itself (iteration cap, bounded
+  reflection retry) is covered by the `test_agent_graph.py` unit tests above.

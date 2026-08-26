@@ -6,6 +6,8 @@ from typing import List, Optional
 
 from sec_edgar_downloader import Downloader
 
+from src.utils.timing import log_duration
+
 logger = logging.getLogger(__name__)
 
 
@@ -80,21 +82,23 @@ class SecFilingsDownloader:
 
             if isinstance(tickers, list):
                 for tick in tickers:
+                    with log_duration(logger, f"SEC EDGAR download ({tick}, {filing_type})"):
+                        downloader.get(
+                            form=filing_type or "10-K",
+                            ticker_or_cik=tick,
+                            limit=limit,
+                            after=after_date,
+                            before=before_date,
+                        )
+            else:
+                with log_duration(logger, f"SEC EDGAR download ({tickers}, {filing_type})"):
                     downloader.get(
                         form=filing_type or "10-K",
-                        ticker_or_cik=tick,
+                        ticker_or_cik=tickers,
                         limit=limit,
                         after=after_date,
                         before=before_date,
                     )
-            else:
-                downloader.get(
-                    form=filing_type or "10-K",
-                    ticker_or_cik=tickers,
-                    limit=limit,
-                    after=after_date,
-                    before=before_date,
-                )
 
             return self._flatten_and_move(temp_dir)
 

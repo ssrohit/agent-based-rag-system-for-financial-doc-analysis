@@ -19,6 +19,7 @@ from src.services.hybrid_retrieval import (
     select_top_k_by_score,
 )
 from src.utils.singleton import Singleton
+from src.utils.timing import log_duration
 
 logger = logging.getLogger(__name__)
 
@@ -73,15 +74,16 @@ class RetrievalService(metaclass=Singleton):
             set to `None` when the collection is currently empty (see `build_bm25_index`).
         """
         try:
-            data = self.vector_store.get(include=["documents", "metadatas"])
-            documents = [
-                Document(page_content=text, metadata=metadata or {}, id=doc_id)
-                for doc_id, text, metadata in zip(
-                    data["ids"], data["documents"], data["metadatas"]
-                )
-            ]
-            self._bm25_documents = documents
-            self._bm25_index = build_bm25_index(documents)
+            with log_duration(logger, "BM25 index refresh"):
+                data = self.vector_store.get(include=["documents", "metadatas"])
+                documents = [
+                    Document(page_content=text, metadata=metadata or {}, id=doc_id)
+                    for doc_id, text, metadata in zip(
+                        data["ids"], data["documents"], data["metadatas"]
+                    )
+                ]
+                self._bm25_documents = documents
+                self._bm25_index = build_bm25_index(documents)
             logger.info("BM25 index refreshed with %d chunks", len(documents))
         except Exception as error:
             logger.error("Error while refreshing BM25 index: %s", str(error), exc_info=True)
@@ -136,18 +138,23 @@ class RetrievalService(metaclass=Singleton):
             produced no candidates.
         """
         try:
-            vector_docs = await self.vector_store.asimilarity_search(
-                query, k=VECTOR_CANDIDATE_K, filter=build_ticker_filter(tickers)
-            )
-            bm25_docs = await asyncio.to_thread(self._bm25_candidates, query, tickers)
-            fused = reciprocal_rank_fusion([vector_docs, bm25_docs])[:RERANK_CANDIDATE_POOL]
-            if not fused:
-                return []
+            with log_duration(logger, f"Hybrid retrieval total (query={query!r})"):
+                with log_duration(logger, "Vector similarity search"):
+                    vector_docs = await self.vector_store.asimilarity_search(
+                        query, k=VECTOR_CANDIDATE_K, filter=build_ticker_filter(tickers)
+                    )
+                with log_duration(logger, "BM25 candidate search"):
+                    bm25_docs = await asyncio.to_thread(self._bm25_candidates, query, tickers)
 
-            scores = await asyncio.to_thread(
-                self.cross_encoder.predict, [(query, doc.page_content) for doc in fused]
-            )
-            return select_top_k_by_score(fused, scores, k)
+                fused = reciprocal_rank_fusion([vector_docs, bm25_docs])[:RERANK_CANDIDATE_POOL]
+                if not fused:
+                    return []
+
+                with log_duration(logger, f"Cross-encoder rerank ({len(fused)} candidates)"):
+                    scores = await asyncio.to_thread(
+                        self.cross_encoder.predict, [(query, doc.page_content) for doc in fused]
+                    )
+                return select_top_k_by_score(fused, scores, k)
         except Exception as error:
             logger.error(
                 "Error while retrieving chunks for query %r: %s",

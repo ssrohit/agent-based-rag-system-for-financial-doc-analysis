@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from src.config import settings
 from src.utils.singleton import Singleton
+from src.utils.timing import log_duration
 
 from langfuse.langchain import CallbackHandler
 
@@ -86,6 +87,42 @@ class LLMService(metaclass=Singleton):
 
         return resolved
 
+    def get_chat_model(
+        self,
+        prompt: Any = None,
+        model_name: Optional[str] = None,
+        temperature: float = 0.0,
+        extra_callbacks: Optional[List[BaseCallbackHandler]] = None,
+        **kwargs: Any
+    ) -> ChatGoogleGenerativeAI:
+        """
+        Build a `ChatGoogleGenerativeAI` instance through the same model-resolution and
+        Langfuse-callback-attachment path `ainvoke`/`ainvoke_structured` use internally, exposed
+        publicly for callers that need the raw model object (e.g. to `.bind_tools(...)` for an
+        agent loop) rather than one of this service's narrower invoke helpers.
+
+        Args:
+            prompt: A Langfuse prompt object (or None) used for model-name resolution via
+                `_resolve_model_name`; not sent to the model itself.
+            model_name: Explicit model name override; see `_resolve_model_name` precedence.
+            temperature: Sampling temperature.
+            extra_callbacks: Additional LangChain callbacks beyond the auto-attached Langfuse one.
+            **kwargs: Forwarded to `ChatGoogleGenerativeAI(...)`; also inspected for a
+                `langfuse_prompt`/`prompt_object`/`prompt_client` key during model-name resolution.
+
+        Returns:
+            A configured, not-yet-invoked `ChatGoogleGenerativeAI` instance.
+        """
+        selected_model = self._resolve_model_name(model_name, prompt, kwargs)
+        callbacks = self._get_callbacks(extra_callbacks)
+        return ChatGoogleGenerativeAI(
+            model=selected_model,
+            google_api_key=settings.GOOGLE_API_KEY,
+            temperature=temperature,
+            callbacks=callbacks,
+            **kwargs
+        )
+
     async def ainvoke_structured(
         self,
         prompt: Any,
@@ -99,14 +136,12 @@ class LLMService(metaclass=Singleton):
         Asynchronously invokes the LLM with structured output mapping to the specified Pydantic schema.
         """
         selected_model = self._resolve_model_name(model_name, prompt, kwargs)
-        callbacks = self._get_callbacks(extra_callbacks)
-
         try:
-            model = ChatGoogleGenerativeAI(
-                model=selected_model,
-                google_api_key=settings.GOOGLE_API_KEY,
+            model = self.get_chat_model(
+                prompt=prompt,
+                model_name=selected_model,
                 temperature=temperature,
-                callbacks=callbacks,
+                extra_callbacks=extra_callbacks,
                 **kwargs
             )
             structured_model = model.with_structured_output(
@@ -115,7 +150,8 @@ class LLMService(metaclass=Singleton):
             )
 
             # We cast to Type T since the returned value is guaranteed to match the schema
-            response = await structured_model.ainvoke(prompt)
+            with log_duration(logger, f"LLM structured call (model={selected_model}, schema={schema.__name__})"):
+                response = await structured_model.ainvoke(prompt)
             return response
         except Exception as error:
             logger.error(
@@ -138,18 +174,17 @@ class LLMService(metaclass=Singleton):
         Asynchronously invokes the LLM and returns the raw string content response.
         """
         selected_model = self._resolve_model_name(model_name, prompt, kwargs)
-        callbacks = self._get_callbacks(extra_callbacks)
-
         try:
-            model = ChatGoogleGenerativeAI(
-                model=selected_model,
-                google_api_key=settings.GOOGLE_API_KEY,
+            model = self.get_chat_model(
+                prompt=prompt,
+                model_name=selected_model,
                 temperature=temperature,
-                callbacks=callbacks,
+                extra_callbacks=extra_callbacks,
                 **kwargs
             )
 
-            response = await model.ainvoke(prompt)
+            with log_duration(logger, f"LLM call (model={selected_model})"):
+                response = await model.ainvoke(prompt)
             return str(response.content)
         except Exception as error:
             logger.error(

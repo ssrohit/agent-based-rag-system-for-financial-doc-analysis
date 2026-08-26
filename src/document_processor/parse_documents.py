@@ -2,7 +2,6 @@ import os
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 import logging
 import re
-from datetime import datetime
 from typing import List, Optional, Union, Dict, Any, Iterator
 
 from bs4 import BeautifulSoup
@@ -12,6 +11,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from src.config import settings
+from src.utils.timing import log_duration
 
 logger = logging.getLogger(__name__)
 
@@ -528,21 +528,20 @@ class DocumentProcessor:
             str(filings),
         )
         try:
-            start = datetime.now()
-            document_loader = SecEdgarAdvancedLoader(
-                file_path=file_path,
-                target_types=filings,
-                ticker=ticker,
-                table_max_chars=_CHUNK_SIZE - _TABLE_MARKER_OVERHEAD,
-            )
-            for doc in document_loader.lazy_load():
-                chunks = split_document_preserving_tables(
-                    doc, chunk_size=_CHUNK_SIZE, chunk_overlap=_CHUNK_OVERLAP
+            with log_duration(logger, f"Document extraction+chunking+embedding ({file_path})"):
+                document_loader = SecEdgarAdvancedLoader(
+                    file_path=file_path,
+                    target_types=filings,
+                    ticker=ticker,
+                    table_max_chars=_CHUNK_SIZE - _TABLE_MARKER_OVERHEAD,
                 )
-                self.vector_store.add_documents(documents=chunks)
-            end = datetime.now()
+                for doc in document_loader.lazy_load():
+                    chunks = split_document_preserving_tables(
+                        doc, chunk_size=_CHUNK_SIZE, chunk_overlap=_CHUNK_OVERLAP
+                    )
+                    with log_duration(logger, f"Embed+store {len(chunks)} chunk(s) ({file_path})"):
+                        self.vector_store.add_documents(documents=chunks)
             logger.info("Successfully loaded data into vector store")
-            logger.debug("Time elapsed: %s", str(end - start))
         except Exception as e:
             logger.exception(
                 "Error while extracting data from file: %s with error: %s",
