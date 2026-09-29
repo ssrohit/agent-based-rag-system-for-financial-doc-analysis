@@ -15,14 +15,17 @@ from typing import List, Optional, Tuple
 
 from langchain_core.documents import Document
 from langchain_core.tools import StructuredTool
+from langfuse import get_client
 from pydantic import BaseModel, Field
 
 from src.services.calculator import safe_eval
 from src.services.rag_formatting import build_context
 from src.services.retrieval_service import retrieval_service
+from src.utils.observability import observe_child
 from src.utils.timing import log_duration
 
 logger = logging.getLogger(__name__)
+langfuse = get_client()
 
 RETRIEVE_K = 5
 
@@ -55,6 +58,7 @@ class CalculateInput(BaseModel):
     )
 
 
+@observe_child(as_type="tool", capture_output=False)
 async def search_filings(
     query: str, tickers: Optional[List[str]] = None
 ) -> Tuple[str, List[Document]]:
@@ -72,10 +76,18 @@ async def search_filings(
     docs = await retrieval_service.retrieve(query, k=RETRIEVE_K, tickers=tickers)
     if not docs:
         scope = f" for {', '.join(tickers)}" if tickers else ""
+        langfuse.update_current_span(output={"doc_count": 0})
         return f"No relevant filing chunks found{scope} for query: {query!r}", []
+    langfuse.update_current_span(
+        output={
+            "doc_count": len(docs),
+            "tickers": sorted({d.metadata.get("ticker") for d in docs if d.metadata.get("ticker")}),
+        }
+    )
     return build_context(docs), docs
 
 
+@observe_child(as_type="tool", capture_output=False)
 async def compare_companies(tickers: List[str], aspect: str) -> Tuple[str, List[Document]]:
     """Gather evidence to compare two or more companies on a specific financial aspect. Runs a
     separate scoped search per ticker in parallel and returns the evidence grouped by company, so
@@ -104,9 +116,13 @@ async def compare_companies(tickers: List[str], aspect: str) -> Tuple[str, List[
         section_body = build_context(docs) if docs else "No relevant filing chunks found."
         sections.append(f"## {ticker}\n\n{section_body}")
 
+    langfuse.update_current_span(
+        output={"doc_counts_by_ticker": {t: len(d) for t, d in zip(tickers, per_ticker_docs)}}
+    )
     return "\n\n---\n\n".join(sections), all_docs
 
 
+@observe_child(as_type="tool")
 async def calculate(expression: str) -> Tuple[str, List[Document]]:
     """Evaluate a numeric arithmetic expression. Use this instead of doing arithmetic mentally,
     e.g. to compute a percent change or ratio from two figures already retrieved.

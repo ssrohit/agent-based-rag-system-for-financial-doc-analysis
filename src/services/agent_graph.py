@@ -19,6 +19,7 @@ from langchain_core.documents import Document
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
+from langfuse import get_client
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from typing_extensions import Annotated
@@ -27,9 +28,11 @@ from src.models.agent_models import AnswerGrade
 from src.models.chat_models import FinancialAnswer
 from src.services.hybrid_retrieval import dedup_documents
 from src.services.rag_formatting import build_context
+from src.utils.observability import observe_child
 from src.utils.timing import log_duration
 
 logger = logging.getLogger(__name__)
+langfuse = get_client()
 
 MAX_TOOL_ITERATIONS = 4
 MAX_REFLECTION_RETRIES = 1
@@ -134,7 +137,11 @@ def build_agent_graph(
         A compiled LangGraph app (`.ainvoke(state) -> AgentState`).
     """
 
+    @observe_child(as_type="agent", capture_input=False)
     async def agent_node(state: AgentState) -> dict:
+        langfuse.update_current_span(
+            input={"loop_count": state["loop_count"], "message_count": len(state["messages"])}
+        )
         system_prompt = get_agent_system_prompt()
         prompt_messages = list(system_prompt) if isinstance(system_prompt, list) else [system_prompt]
         model = agent_model_factory().bind_tools(list(tool_schemas))
@@ -153,11 +160,20 @@ def build_agent_graph(
             return "tools"
         return "draft_answer"
 
+    @observe_child(as_type="chain", capture_input=False, capture_output=False)
     async def tools_node(state: AgentState) -> dict:
         last: AIMessage = state["messages"][-1]
         tool_messages: List[BaseMessage] = []
         new_docs: List[Document] = []
         log_entries: List[str] = []
+
+        langfuse.update_current_span(
+            input={
+                "tool_calls": [
+                    _format_tool_call(call["name"], call.get("args", {})) for call in last.tool_calls
+                ]
+            }
+        )
 
         for call in last.tool_calls:
             name = call["name"]
@@ -176,6 +192,10 @@ def build_agent_graph(
             new_docs.extend(docs)
             log_entries.append(_format_tool_call(name, args))
 
+        langfuse.update_current_span(
+            output={"tool_call_log": log_entries, "new_doc_count": len(new_docs)}
+        )
+
         return {
             "messages": tool_messages,
             "retrieved_chunks": new_docs,
@@ -183,7 +203,11 @@ def build_agent_graph(
             "loop_count": state["loop_count"] + 1,
         }
 
+    @observe_child(as_type="chain", capture_input=False)
     async def draft_answer_node(state: AgentState) -> dict:
+        langfuse.update_current_span(
+            input={"question": state["question"], "evidence_chunk_count": len(state["retrieved_chunks"])}
+        )
         deduped = dedup_documents(state["retrieved_chunks"])
         context = build_context(deduped) if deduped else "No evidence was retrieved."
         prompt = get_draft_prompt(context, state["question"])
@@ -192,7 +216,11 @@ def build_agent_graph(
             draft = await model.ainvoke(prompt)
         return {"draft_answer": draft}
 
+    @observe_child(as_type="chain", capture_input=False)
     async def grade_node(state: AgentState) -> dict:
+        langfuse.update_current_span(
+            input={"question": state["question"], "evidence_chunk_count": len(state["retrieved_chunks"])}
+        )
         deduped = dedup_documents(state["retrieved_chunks"])
         context = build_context(deduped) if deduped else "No evidence was retrieved."
         draft_text = _draft_answer_to_text(state["draft_answer"])

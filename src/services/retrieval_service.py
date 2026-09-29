@@ -5,6 +5,7 @@ from typing import List, Optional
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
+from langfuse import get_client
 from rank_bm25 import BM25Okapi
 from sentence_transformers import CrossEncoder
 
@@ -18,10 +19,12 @@ from src.services.hybrid_retrieval import (
     reciprocal_rank_fusion,
     select_top_k_by_score,
 )
+from src.utils.observability import observe_child
 from src.utils.singleton import Singleton
 from src.utils.timing import log_duration
 
 logger = logging.getLogger(__name__)
+langfuse = get_client()
 
 CROSS_ENCODER_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 VECTOR_CANDIDATE_K = 20
@@ -115,6 +118,7 @@ class RetrievalService(metaclass=Singleton):
         scoped_index = build_bm25_index(scoped_documents)
         return bm25_top_n(scoped_index, scoped_documents, query, BM25_CANDIDATE_K)
 
+    @observe_child(as_type="retriever", capture_input=False, capture_output=False)
     async def retrieve(
         self, query: str, k: int = 5, tickers: Optional[List[str]] = None
     ) -> List[Document]:
@@ -137,6 +141,7 @@ class RetrievalService(metaclass=Singleton):
             either the collection (or the `tickers`-scoped subset of it) is empty, or fusion
             produced no candidates.
         """
+        langfuse.update_current_span(input={"query": query, "k": k, "tickers": tickers})
         try:
             with log_duration(logger, f"Hybrid retrieval total (query={query!r})"):
                 with log_duration(logger, "Vector similarity search"):
@@ -148,13 +153,22 @@ class RetrievalService(metaclass=Singleton):
 
                 fused = reciprocal_rank_fusion([vector_docs, bm25_docs])[:RERANK_CANDIDATE_POOL]
                 if not fused:
+                    langfuse.update_current_span(output={"doc_count": 0})
                     return []
 
                 with log_duration(logger, f"Cross-encoder rerank ({len(fused)} candidates)"):
                     scores = await asyncio.to_thread(
                         self.cross_encoder.predict, [(query, doc.page_content) for doc in fused]
                     )
-                return select_top_k_by_score(fused, scores, k)
+                results = select_top_k_by_score(fused, scores, k)
+                langfuse.update_current_span(
+                    output={
+                        "doc_count": len(results),
+                        "ids": [doc.id for doc in results],
+                        "rerank_scores": [doc.metadata.get("rerank_score") for doc in results],
+                    }
+                )
+                return results
         except Exception as error:
             logger.error(
                 "Error while retrieving chunks for query %r: %s",
