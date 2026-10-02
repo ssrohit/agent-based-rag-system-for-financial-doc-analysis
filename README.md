@@ -80,3 +80,7 @@ This project is being built incrementally, one capability ("level") at a time �
 - [ ] **Level 6 — Evaluation**: RAGAS-based evaluation harness, benchmarked across levels 2-5.
 - [ ] **Level 7 — Frontend**: chat interface with a sources panel (framework TBD).
 - [ ] **Level 8 — Deployment**: containerization and a hosted demo.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
